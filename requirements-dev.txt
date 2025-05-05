@@ -1,0 +1,4 @@
+pytest
+pytest-asyncio
+pytest-mock
+discord.py>=2.0.0
