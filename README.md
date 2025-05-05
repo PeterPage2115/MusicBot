@@ -9,7 +9,7 @@ Work In Progress
 **Wielojęzyczny bot muzyczny dla Discorda z zaawansowanymi funkcjami!**
 
 [![GitHub Stars](https://img.shields.io/github/stars/PeterPage2115/MusicBot?style=social)](https://github.com/PeterPage2115/MusicBot)
-[![GitHub Issues](https://img.shields.io/github/issues/PeterPage2115/Discord-Music-Bot)](https://github.com/PeterPage2115/MusicBot/issues)
+[![GitHub Issues](https://img.shields.io/github/issues/PeterPage2115/MusicBot)](https://github.com/PeterPage2115/MusicBot/issues)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
