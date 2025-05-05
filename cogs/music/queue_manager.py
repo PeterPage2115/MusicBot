@@ -7,8 +7,86 @@ import asyncio
 import logging
 import os
 import traceback
+import math
+from utils.helpers import YTDLError
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+# Inicjalizacja loggera
+logger = get_logger()
+
+class QueuePaginator(discord.ui.View):
+    """
+    Widok do paginacji kolejki.
+    
+    Pozwala na nawigację po stronach kolejki za pomocą przycisków.
+    """
+    
+    def __init__(self, pages, ctx, timeout=120):
+        super().__init__(timeout=timeout)
+        self.pages = pages
+        self.total_pages = len(pages)
+        self.current_page = 0
+        self.ctx = ctx
+        self.message = None
+        
+        # Wyłącz przyciski, jeśli mamy tylko jedną stronę
+        if self.total_pages <= 1:
+            self.first_page.disabled = True
+            self.prev_page.disabled = True
+            self.next_page.disabled = True
+            self.last_page.disabled = True
+    
+    @discord.ui.button(label="⏪ Pierwsza", style=discord.ButtonStyle.primary)
+    async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.current_page = 0
+        await self.update_page(interaction)
+    
+    @discord.ui.button(label="◀️ Poprzednia", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self.update_page(interaction)
+    
+    @discord.ui.button(label="▶️ Następna", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+        await self.update_page(interaction)
+    
+    @discord.ui.button(label="⏩ Ostatnia", style=discord.ButtonStyle.primary)
+    async def last_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.current_page = self.total_pages - 1
+        await self.update_page(interaction)
+    
+    async def update_page(self, interaction):
+        """Aktualizuje stronę do wyświetlenia"""
+        # Pobierz bieżącą stronę
+        page = self.pages[self.current_page]
+        
+        # Zaktualizuj przyciski
+        self.first_page.disabled = self.current_page == 0
+        self.prev_page.disabled = self.current_page == 0
+        self.next_page.disabled = self.current_page == self.total_pages - 1
+        self.last_page.disabled = self.current_page == self.total_pages - 1
+        
+        # Aktualizuj wiadomość
+        await interaction.message.edit(embed=page, view=self)
+    
+    async def on_timeout(self):
+        """Obsługa timeout widoku"""
+        # Wyłącz wszystkie przyciski po timeout
+        self.first_page.disabled = True
+        self.prev_page.disabled = True
+        self.next_page.disabled = True
+        self.last_page.disabled = True
+        
+        if self.message:
+            await self.message.edit(view=self)
+
 
 async def _toggle_repeat(self, ctx):
     """Włącza/wyłącza tryb powtarzania dla bieżącego utworu."""
@@ -16,12 +94,12 @@ async def _toggle_repeat(self, ctx):
     
     # Sprawdź, czy bot jest na kanale głosowym
     if not ctx.voice_client:
-        await ctx.send("❌ Nie jestem połączony z żadnym kanałem głosowym.")
+        await ctx.send("❌ Nie jestem połączony z kanałem głosowym!")
         return
     
     # Sprawdź, czy coś jest odtwarzane
     if guild_id not in self.now_playing or not self.now_playing[guild_id]:
-        await ctx.send("❌ Aktualnie nic nie jest odtwarzane.")
+        await ctx.send("❌ Nic teraz nie gram!")
         return
     
     # Przełącz tryb powtarzania
@@ -34,13 +112,14 @@ async def _toggle_repeat(self, ctx):
     # Tryby: 0 - wyłączony, 1 - powtarzanie utworu, 2 - powtarzanie kolejki
     if current_mode == 0:
         self.repeat_mode[guild_id] = 1
-        await ctx.send("🔂 Tryb powtarzania **utworu włączony**. Bieżący utwór będzie odtwarzany w pętli.")
+        await ctx.send("🔂 Powtarzanie **bieżącego utworu** włączone")
     elif current_mode == 1:
         self.repeat_mode[guild_id] = 2
-        await ctx.send("🔁 Tryb powtarzania **kolejki włączony**. Po zakończeniu kolejki, rozpocznę od początku.")
+        await ctx.send("🔁 Powtarzanie **całej kolejki** włączone")
     else:
         self.repeat_mode[guild_id] = 0
-        await ctx.send("➡️ Tryb powtarzania **wyłączony**. Po zakończeniu utworu przejdę do następnego.")
+        await ctx.send("🔄 Powtarzanie **wyłączone**")
+
 
 async def _playlist(self, ctx, *, url):
     """
@@ -51,284 +130,385 @@ async def _playlist(self, ctx, *, url):
         url: URL playlisty YouTube
     """
     # Sprawdź, czy bot jest na kanale głosowym
-    if not ctx.voice_client:
-        # Próbuj dołączyć do kanału głosowego
+    if ctx.voice_client is None:
         if ctx.author.voice:
-            try:
-                await ctx.author.voice.channel.connect()
-            except Exception as e:
-                await ctx.send(f"Nie mogę dołączyć do kanału: {str(e)}")
-                return
+            await ctx.author.voice.channel.connect()
+            await ctx.send(f"Dołączono do kanału {ctx.author.voice.channel.mention}")
         else:
             await ctx.send("Musisz być na kanale głosowym, aby użyć tej komendy!")
             return
     
-    # Sprawdź, czy URL jest URL playlisty
+    # Sprawdź, czy URL zawiera listę odtwarzania
     if "list=" not in url:
-        await ctx.send("❌ To nie wygląda na link do playlisty YouTube. Użyj komendy `%play` dla pojedynczych utworów.")
+        await ctx.send("⚠️ To nie jest link do playlisty YouTube!")
         return
     
-    # Dodaj playlistę
+    # Zapisz kanał, na którym wywołano komendę
+    self.command_channels[ctx.guild.id] = ctx.channel
+    
+    # Dodaj playlistę do kolejki
     await self._add_playlist(ctx, url)
+
 
 async def _add_playlist(self, ctx, playlist_url, *, max_tracks=100, chunk_size=25):
     """
-    Dodaje utwory z playlisty YouTube do kolejki w sposób zoptymalizowany.
+    Dodaje playlistę do kolejki po kawałkach.
     
     Args:
         ctx: Kontekst komendy
-        playlist_url: URL playlisty
+        playlist_url: URL playlisty YouTube
         max_tracks: Maksymalna liczba utworów do dodania
-        chunk_size: Rozmiar porcji do ładowania
+        chunk_size: Rozmiar porcji do przetworzenia na raz
     """
-    try:
-        message = await ctx.send(f"🔍 Pobieram informacje o playliście... Może to chwilę potrwać.")
-        
-        # Ustaw asynchroniczny event loop
-        loop = asyncio.get_event_loop()
-        
-        # Wstępne pobranie informacji o playliście
-        options = {
-            'extract_flat': True,
-            'quiet': True,
-            'no_warnings': True,
-            'ignoreerrors': True,
-            'playlistend': max_tracks
-        }
-        
-        # Pobieramy informacje o playliście
+    async with ctx.typing():
         try:
-            playlist_info = await loop.run_in_executor(None, lambda: ytdl.extract_info(playlist_url, download=False, process=False, ie_key=None, extra_info={}, **options))
-        except Exception as e:
-            await message.edit(content=f"❌ Wystąpił błąd podczas pobierania playlisty: {str(e)}")
-            logger.error(f"Error fetching playlist: {e}")
-            return
-        
-        if not playlist_info or 'entries' not in playlist_info:
-            await message.edit(content=f"❌ Nie mogę pobrać informacji o playliście. Upewnij się, że URL jest poprawny.")
-            return
-        
-        # Pobierz całkowitą liczbę utworów
-        entries = playlist_info['entries']
-        if not entries:
-            await message.edit(content=f"❌ Playlista jest pusta lub niedostępna.")
-            return
+            await ctx.send(f"🔍 Pobieram informacje o playliście...")
             
-        total_tracks = len(entries)
-        
-        # Ogranicz liczbę utworów
-        if total_tracks > max_tracks:
-            await message.edit(content=f"⚠️ Playlista zawiera {total_tracks} utworów, co przekracza limit {max_tracks}. Załaduję tylko pierwsze {max_tracks} utworów.")
-            total_tracks = max_tracks
-            entries = entries[:max_tracks]
-        
-        # Inicjalizuj kolejkę dla serwera, jeśli nie istnieje
-        guild_id = ctx.guild.id
-        if guild_id not in self.queues:
-            self.queues[guild_id] = []
-        
-        # Zapisz kanał, na którym wywołano komendę
-        self.command_channels[guild_id] = ctx.channel
-        
-        # Pobieraj utwory w porcjach
-        added_tracks = 0
-        progress_message = await ctx.send(f"📥 Ładowanie utworów: 0/{total_tracks}")
-        
-        # Inicjalizacja historii kolejki jeśli nie istnieje
-        if not hasattr(self, '_queue_history'):
-            self._queue_history = {}
-        
-        if guild_id not in self._queue_history:
-            self._queue_history[guild_id] = []
-        
-        # Dodawaj utwory w porcjach
-        for i in range(0, total_tracks, chunk_size):
-            chunk_end = min(i + chunk_size, total_tracks)
-            current_chunk = entries[i:chunk_end]
+            # Przygotuj opcje yt-dlp
+            ytdl_options = {
+                'format': 'bestaudio/best',
+                'outtmpl': 'temp/%(extractor)s-%(id)s-%(title)s.%(ext)s',
+                'restrictfilenames': True,
+                'noplaylist': False,  # Potrzebujemy playlist
+                'nocheckcertificate': True,
+                'ignoreerrors': False,
+                'logtostderr': False,
+                'quiet': True,
+                'no_warnings': True,
+                'default_search': 'auto',
+                'source_address': '0.0.0.0',
+                'extract_flat': True,  # Nie pobieraj wszystkich informacji na raz
+                'force_generic_extractor': False
+            }
             
-            # Aktualizuj wiadomość z postępem
-            await progress_message.edit(content=f"📥 Ładowanie utworów: {i}/{total_tracks}")
+            # Inicjalizacja YTDL
+            import yt_dlp
+            ydl = yt_dlp.YoutubeDL(ytdl_options)
             
-            # Pobierz informacje o utworach w tej porcji
-            for entry in current_chunk:
-                try:
-                    # Pobierz szczegóły utworu
-                    url = entry.get('url', entry.get('webpage_url', None))
-                    if not url:
+            # Pobierz informacje o playliście
+            info = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: ydl.extract_info(playlist_url, download=False)
+            )
+            
+            if 'entries' not in info:
+                await ctx.send("❌ Nie znaleziono playlisty lub wystąpił błąd!")
+                return
+            
+            # Pobierz tytuł playlisty, jeśli dostępny
+            playlist_title = info.get('title', 'Playlista YouTube')
+            
+            # Ogranicz liczbę utworów do max_tracks
+            entries = info['entries'][:max_tracks]
+            total_tracks = len(entries)
+            
+            if total_tracks == 0:
+                await ctx.send("❌ Playlista jest pusta!")
+                return
+            
+            # Wyświetl informacje o playliście
+            await ctx.send(f"📋 Dodaję playlistę **{playlist_title}** ({total_tracks} utworów)...")
+            
+            # Inicjalizacja kolejki dla tego serwera, jeśli nie istnieje
+            if ctx.guild.id not in self.queues:
+                self.queues[ctx.guild.id] = []
+            
+            # Liczniki do śledzenia postępu
+            added_count = 0
+            failed_count = 0
+            duplicate_count = 0
+            
+            # Pobierz informacje o każdym utworze w playliście w mniejszych porcjach
+            for i in range(0, total_tracks, chunk_size):
+                chunk = entries[i:i+chunk_size]
+                chunk_size_actual = len(chunk)
+                
+                # Aktualizuj status co każdą porcję
+                if i > 0:
+                    await ctx.send(f"⏳ Przetwarzanie {i}/{total_tracks} utworów...")
+                
+                for entry in chunk:
+                    # Sprawdź czy mamy URL
+                    if 'url' not in entry and 'id' not in entry:
+                        failed_count += 1
                         continue
                     
-                    # Pobieramy informacje o utworze
-                    source = await YTDLSource.from_url(url, loop=loop, stream=True)
+                    # Utwórz URL na podstawie ID, jeśli potrzeba
+                    video_url = entry.get('url', f"https://www.youtube.com/watch?v={entry.get('id')}")
                     
-                    # Dodaj utwór do kolejki
-                    self.queues[guild_id].append(source)
+                    # Sprawdź, czy utwór już jest w kolejce (duplikat)
+                    is_duplicate = False
+                    for track in self.queues[ctx.guild.id]:
+                        if track.url == video_url:
+                            duplicate_count += 1
+                            is_duplicate = True
+                            break
                     
-                    # Dodaj do historii kolejki
-                    self._queue_history[guild_id].append(source)
+                    if is_duplicate:
+                        continue
                     
-                    added_tracks += 1
-                    
-                    # Co 5 utworów aktualizuj wiadomość
-                    if added_tracks % 5 == 0:
-                        await progress_message.edit(content=f"📥 Ładowanie utworów: {added_tracks}/{total_tracks}")
-                except Exception as e:
-                    logger.error(f"Błąd podczas dodawania utworu z playlisty: {e}")
-                    continue
-        
-        # Aktualizuj finalne wiadomości
-        await progress_message.edit(content=f"✅ Załadowano {added_tracks} utworów z playlisty!")
-        await message.edit(content=f"🎵 Dodano playlistę do kolejki! Liczba utworów: {added_tracks}")
-        
-        # Jeśli bot nie odtwarza muzyki, rozpocznij odtwarzanie
-        if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-            await self._play_next(ctx)
+                    try:
+                        # Pobierz informacje o utworze
+                        player = await YTDLSource.from_url(
+                            video_url, 
+                            loop=self.bot.loop, 
+                            stream=True,
+                            volume=0.5
+                        )
+                        
+                        # Dodaj dodatkowe informacje
+                        player.requester = ctx.author
+                        
+                        # Dodaj do kolejki
+                        self.queues[ctx.guild.id].append(player)
+                        added_count += 1
+                    except Exception as e:
+                        logger.error(f"Błąd podczas dodawania utworu {video_url} do kolejki: {e}")
+                        failed_count += 1
+                
+                # Daj czas na inne operacje asyncio
+                await asyncio.sleep(0.1)
             
-    except Exception as e:
-        logger.error(f"Błąd podczas ładowania playlisty: {e}")
-        await ctx.send(f"❌ Wystąpił błąd podczas ładowania playlisty: {str(e)}")
+            # Wyświetl podsumowanie
+            message = f"✅ Dodano **{added_count}** utworów do kolejki"
+            if duplicate_count > 0:
+                message += f", **{duplicate_count}** duplikatów pominięto"
+            if failed_count > 0:
+                message += f", **{failed_count}** nie udało się załadować"
+            await ctx.send(message)
+            
+            # Rozpocznij odtwarzanie, jeśli nic nie jest odtwarzane
+            if ctx.voice_client and not ctx.voice_client.is_playing():
+                await self._play_next(ctx)
+                
+        except Exception as e:
+            logger.error(f"Błąd podczas dodawania playlisty: {e}")
+            await ctx.send(f"❌ Wystąpił błąd podczas dodawania playlisty: {str(e)}")
 
-# Zaktualizuj funkcję _queue, zastępując wszystkie wystąpienia cog na self
 
 async def _queue(self, ctx):
-    """Wyświetla aktualną kolejkę utworów"""
+    """
+    Wyświetla aktualną kolejkę utworów z paginacją.
+    """
     guild_id = ctx.guild.id
     
-    if not ctx.voice_client or (guild_id not in self.queues or not self.queues[guild_id]):
-        await ctx.send("Kolejka jest pusta!")
+    # Sprawdź, czy kolejka istnieje
+    if guild_id not in self.queues or not self.queues[guild_id]:
+        # Jeśli jest coś odtwarzane, pokaż to
+        if guild_id in self.now_playing and self.now_playing[guild_id]:
+            player = self.now_playing[guild_id]
+            embed = discord.Embed(
+                title="🎵 Aktualnie odtwarzane",
+                description=f"[{player.title}]({player.url})",
+                color=discord.Color.blue()
+            )
+            
+            # Dodaj miniaturę utworu
+            if player.thumbnail:
+                embed.set_thumbnail(url=player.thumbnail)
+            
+            # Dodaj informacje o utworze
+            embed.add_field(name="Twórca", value=player.uploader, inline=True)
+            embed.add_field(name="Czas trwania", value=player.duration, inline=True)
+            embed.add_field(name="Na prośbę", value=player.requester.mention, inline=True)
+            
+            embed.set_footer(text="Kolejka jest pusta.")
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("❌ Kolejka jest pusta i nic nie jest odtwarzane!")
         return
     
+    # Przygotuj zawartość kolejki do wyświetlenia z paginacją
     queue = self.queues[guild_id]
+    items_per_page = 10
+    pages = []
     
-    # Utwórz embed
-    embed = discord.Embed(
-        title="📋 Kolejka utworów",
-        description=f"Łącznie {len(queue)} utworów w kolejce",
-        color=discord.Color.blue()
-    )
+    # Oblicz liczbę stron
+    page_count = math.ceil(len(queue) / items_per_page)
     
-    # Dodaj informację o aktualnie odtwarzanym utworze
-    if guild_id in self.now_playing and ctx.voice_client.is_playing():
-        current = self.now_playing[guild_id]
-        embed.add_field(
-            name="🎵 Teraz odtwarzane",
-            value=f"**{current.title}** ({current.duration})",
-            inline=False
-        )
-    
-    # Dodaj utwory z kolejki
-    tracks_per_page = 10
-    if len(queue) > 0:
-        queue_list = []
-        for i, track in enumerate(queue[:tracks_per_page]):
-            queue_list.append(f"**{i+1}.** {track.title} ({track.duration})")
+    # Utwórz stronę dla każdej części kolejki
+    for page_num in range(page_count):
+        start_idx = page_num * items_per_page
+        end_idx = start_idx + items_per_page
+        page_items = queue[start_idx:end_idx]
         
-        embed.add_field(
-            name="Następne utwory",
-            value="\n".join(queue_list) if queue_list else "Brak utworów w kolejce",
-            inline=False
+        embed = discord.Embed(
+            title=f"📋 Kolejka utworów - {guild_id}",
+            color=discord.Color.blue()
         )
         
-        # Jeśli kolejka jest dłuższa, dodaj informację o pozostałych utworach
-        if len(queue) > tracks_per_page:
+        # Dodaj informacje o aktualnie odtwarzanym utworze, jeśli istnieje
+        if guild_id in self.now_playing and self.now_playing[guild_id]:
+            player = self.now_playing[guild_id]
             embed.add_field(
-                name="...",
-                value=f"i {len(queue) - tracks_per_page} więcej utworów",
+                name="🎵 Aktualnie odtwarzane",
+                value=f"[{player.title}]({player.url}) | {player.duration} | {player.requester.mention}",
                 inline=False
             )
+        
+        # Dodaj utwory na tej stronie
+        tracks_details = []
+        for i, track in enumerate(page_items, start=start_idx + 1):
+            tracks_details.append(
+                f"`{i}.` [{track.title}]({track.url}) | `{track.duration}` | {track.requester.mention}"
+            )
+        
+        # Jeśli mamy utwory na tej stronie, dodaj je
+        if tracks_details:
+            embed.add_field(
+                name=f"Utwory w kolejce",
+                value="\n".join(tracks_details),
+                inline=False
+            )
+        
+        # Dodaj informacje o stronie
+        total_duration = sum(track.duration_raw for track in queue)
+        minutes, seconds = divmod(total_duration, 60)
+        hours, minutes = divmod(minutes, 60)
+        
+        # Formatuj czas całkowity
+        if hours > 0:
+            total_time = f"{hours}h {minutes}m {seconds}s"
+        else:
+            total_time = f"{minutes}m {seconds}s"
+        
+        embed.set_footer(text=f"Strona {page_num + 1}/{page_count} • {len(queue)} utworów • Łączny czas: {total_time}")
+        
+        # Dodaj stronę do listy stron
+        pages.append(embed)
     
-    # Dodaj informację o powtarzaniu
-    repeat_mode = self.repeat_mode.get(guild_id, 0)
-    repeat_info = "Wyłączony"
-    if repeat_mode == 1:
-        repeat_info = "Ten utwór 🔂"
-    elif repeat_mode == 2:
-        repeat_info = "Cała kolejka 🔁"
-    embed.add_field(name="Powtarzanie", value=repeat_info, inline=True)
-    
-    # Wyślij embed
-    await ctx.send(embed=embed)
+    # Jeśli mamy tylko jedną stronę, wyślij ją bez paginacji
+    if len(pages) == 1:
+        await ctx.send(embed=pages[0])
+    else:
+        # W przeciwnym razie użyj paginatora
+        view = QueuePaginator(pages, ctx)
+        message = await ctx.send(embed=pages[0], view=view)
+        view.message = message
 
-# Poprawienie funkcji queue wewnątrz setup_queue_commands
+
+# Funkcja ustawiająca komendy kolejki
 def setup_queue_commands(cog):
-    """Dodaje komendy związane z zarządzaniem kolejką do coga Music."""
+    """
+    Konfiguruje komendy związane z kolejką.
     
-    # Dodaj funkcje do coga
+    Args:
+        cog: Instancja klasy Music
+    """
+    # Inicjalizuj kolekcje, jeśli nie istnieją
+    if not hasattr(cog, 'queues'):
+        cog.queues = {}
+    
+    if not hasattr(cog, 'now_playing'):
+        cog.now_playing = {}
+    
+    if not hasattr(cog, '_queue_history'):
+        cog._queue_history = {}
+    
+    # Przypisz metody do cog
     cog._toggle_repeat = _toggle_repeat.__get__(cog, type(cog))
     cog._playlist = _playlist.__get__(cog, type(cog))
     cog._add_playlist = _add_playlist.__get__(cog, type(cog))
-    
-    # Zastąpienie głównej funkcji _queue przypisanej do klasy
     cog._queue = _queue.__get__(cog, type(cog))
     
-    # Definicje funkcji obsługujących komendy
-    async def queue(ctx, page: int = 1):
-        """Wyświetla kolejkę utworów z paginacją"""
-        await cog._queue(ctx, page)  # Użyj cog zamiast self
+    # Alias dla kompatybilności
+    cog.queue = cog._queue
+    cog.playlist = cog._playlist
+    cog.toggle_repeat = cog._toggle_repeat
     
-    async def _shuffle(self, ctx):
+    # Komendy dla modułu queue_manager
+    @cog.bot.command(name="remove", aliases=["usun"], help="Usuwa utwór z kolejki")
+    @is_dj()
+    async def remove_command(ctx, *, index: int):
+        """Usuwa utwór z kolejki"""
+        guild_id = ctx.guild.id
+        
+        # Sprawdź czy kolejka istnieje
+        if guild_id not in cog.queues or not cog.queues[guild_id]:
+            await ctx.send("❌ Kolejka jest pusta!")
+            return
+        
+        # Sprawdź czy indeks jest poprawny
+        if index < 1 or index > len(cog.queues[guild_id]):
+            await ctx.send(f"⚠️ Podaj poprawny numer utworu (1-{len(cog.queues[guild_id])})!")
+            return
+        
+        # Pobierz utwór do usunięcia
+        track = cog.queues[guild_id][index-1]
+        
+        # Usuń utwór z kolejki
+        cog.queues[guild_id].pop(index-1)
+        
+        # Wyślij potwierdzenie
+        await ctx.send(f"✅ Usunięto z kolejki: **{track.title}**")
+    
+    @cog.bot.command(name="shuffle", aliases=["pomieszaj"], help="Miesza kolejkę utworów")
+    @is_dj()
+    async def shuffle_command(ctx):
         """Miesza kolejkę utworów"""
         guild_id = ctx.guild.id
         
-        if guild_id not in self.queues or not self.queues[guild_id]:
-            await ctx.send("Kolejka jest pusta! Nie ma czego mieszać.")
+        # Sprawdź czy kolejka istnieje
+        if guild_id not in cog.queues or not cog.queues[guild_id]:
+            await ctx.send("❌ Kolejka jest pusta!")
             return
         
-        # Pobierz aktualną kolejkę
-        queue = self.queues[guild_id]
+        # Zapisz długość kolejki przed mieszaniem
+        queue_length = len(cog.queues[guild_id])
         
-        # Jeśli jest tylko jeden utwór, nie ma sensu mieszać
-        if len(queue) <= 1:
-            await ctx.send("W kolejce jest za mało utworów, aby je wymieszać!")
-            return
+        # Pomieszaj kolejkę
+        import random
+        random.shuffle(cog.queues[guild_id])
         
-        # Zapisz liczbę utworów
-        queue_length = len(queue)
-        
-        # Wymieszaj kolejkę
-        random.shuffle(queue)
-        
-        await ctx.send(f"🔀 Kolejka wymieszana! ({queue_length} utworów)")
+        # Wyślij potwierdzenie
+        await ctx.send(f"🔀 Pomieszano {queue_length} utworów w kolejce!")
     
-    async def _clear(self, ctx):
+    @cog.bot.command(name="clear", aliases=["wyczysc"], help="Czyści kolejkę utworów")
+    @is_dj()
+    async def clear_command(ctx):
         """Czyści kolejkę utworów"""
         guild_id = ctx.guild.id
         
-        if guild_id not in self.queues or not self.queues[guild_id]:
-            await ctx.send("Kolejka jest już pusta!")
+        # Sprawdź czy kolejka istnieje
+        if guild_id not in cog.queues or not cog.queues[guild_id]:
+            await ctx.send("❌ Kolejka już jest pusta!")
             return
         
-        # Zapisz liczbę utworów przed wyczyszczeniem
-        queue_length = len(self.queues[guild_id])
+        # Zapisz długość kolejki przed czyszczeniem
+        queue_length = len(cog.queues[guild_id])
         
         # Wyczyść kolejkę
-        self.queues[guild_id].clear()
+        cog.queues[guild_id] = []
         
-        await ctx.send(f"✅ Kolejka wyczyszczona! Usunięto {queue_length} utworów.")
-    
-    async def _remove(self, ctx, index: int):
-        """Usuwa utwór z kolejki na podanej pozycji"""
+        # Wyślij potwierdzenie
+        await ctx.send(f"🧹 Wyczyszczono kolejkę ({queue_length} utworów)!")
+        
+    @cog.bot.command(name="move", aliases=["przenies"], help="Przenosi utwór na inną pozycję w kolejce")
+    @is_dj()
+    async def move_command(ctx, from_pos: int, to_pos: int):
+        """Przenosi utwór na inną pozycję w kolejce"""
         guild_id = ctx.guild.id
         
-        if guild_id not in self.queues or not self.queues[guild_id]:
-            await ctx.send("Kolejka jest pusta!")
+        # Sprawdź czy kolejka istnieje
+        if guild_id not in cog.queues or not cog.queues[guild_id]:
+            await ctx.send("❌ Kolejka jest pusta!")
             return
         
-        queue = self.queues[guild_id]
-        
-        # Sprawdź, czy podany indeks jest prawidłowy
-        if index < 1 or index > len(queue):
-            await ctx.send(f"❌ Nieprawidłowy numer utworu! Kolejka zawiera {len(queue)} utworów.")
+        # Sprawdź poprawność indeksów (użytkownicy numerują od 1)
+        queue_length = len(cog.queues[guild_id])
+        if from_pos < 1 or from_pos > queue_length or to_pos < 1 or to_pos > queue_length:
+            await ctx.send(f"⚠️ Podaj poprawne numery utworów (1-{queue_length})!")
             return
         
-        # Pobierz i usuń utwór z kolejki
-        removed_track = queue.pop(index - 1)
+        # Pobierz utwór do przeniesienia
+        track = cog.queues[guild_id][from_pos-1]
         
-        await ctx.send(f"🗑️ Usunięto z kolejki: **{removed_track.title}**")
-    
-    # Przypisanie funkcji do coga
-    cog.queue = _queue.__get__(cog, type(cog))
-    cog.clear = _clear.__get__(cog, type(cog))
-    cog.shuffle = _shuffle.__get__(cog, type(cog))
-    cog.remove = _remove.__get__(cog, type(cog))
+        # Usuń z oryginalnej pozycji
+        cog.queues[guild_id].pop(from_pos-1)
+        
+        # Wstaw na nowej pozycji
+        cog.queues[guild_id].insert(to_pos-1, track)
+        
+        # Wyślij potwierdzenie
+        await ctx.send(f"✅ Przeniesiono **{track.title}** z pozycji {from_pos} na {to_pos}!")
     
     return cog
