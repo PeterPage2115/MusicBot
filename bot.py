@@ -21,6 +21,7 @@ import asyncio
 import traceback
 from config import TOKEN, PREFIX, DEBUG_MODE
 from utils.logger import get_logger
+import time
 
 # Inicjalizacja loggera
 logger = get_logger()
@@ -47,8 +48,46 @@ async def cleanup_temp_files():
     """Okresowo czyści pliki tymczasowe"""
     logger.info("Rozpoczynam czyszczenie plików tymczasowych...")
     try:
-        from utils.helpers import YTDLSource
-        await YTDLSource.cleanup_temp_files(max_age_hours=24)
+        # Implementacja czyszczenia plików w samym bot.py zamiast polegania na YTDLSource
+        temp_dir = 'temp'
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+            logger.info(f"Utworzono katalog {temp_dir}")
+            return
+
+        current_time = time.time()
+        max_age_seconds = 24 * 3600  # 24 godziny
+        
+        # Liczniki statystyk
+        removed_count = 0
+        total_size_removed = 0
+        
+        for filename in os.listdir(temp_dir):
+            file_path = os.path.join(temp_dir, filename)
+            try:
+                # Sprawdź czy to plik (nie katalog)
+                if not os.path.isfile(file_path):
+                    continue
+                
+                # Pobierz czas modyfikacji pliku
+                file_modified_time = os.path.getmtime(file_path)
+                file_age_seconds = current_time - file_modified_time
+                
+                # Jeśli plik jest starszy niż dozwolony wiek
+                if file_age_seconds > max_age_seconds:
+                    # Pobierz rozmiar pliku przed usunięciem
+                    file_size = os.path.getsize(file_path)
+                    
+                    # Usuń plik
+                    os.unlink(file_path)
+                    
+                    # Aktualizuj statystyki
+                    removed_count += 1
+                    total_size_removed += file_size
+            except Exception as e:
+                logger.error(f"Błąd podczas próby usunięcia pliku {file_path}: {e}")
+        
+        logger.info(f"Usunięto {removed_count} plików, zwolniono {total_size_removed} bajtów")
     except Exception as e:
         logger.error(f"Błąd podczas czyszczenia plików tymczasowych: {e}")
 

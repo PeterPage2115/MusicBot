@@ -1,12 +1,12 @@
 import discord
 from discord.ext import commands
-from config import DJ_ROLE_ENABLED
-from .utils import is_dj
-from utils.logger import get_logger
 import asyncio
 import datetime
 import time
 import math
+from config import DJ_ROLE_ENABLED, PREFIX
+from .utils import is_dj
+from utils.logger import get_logger
 
 # Inicjalizacja loggera
 logger = get_logger()
@@ -252,7 +252,7 @@ def generate_progress_bar(current, total, bar_length=15):
     filled_length = int(bar_length * progress)
     empty_length = bar_length - filled_length
     
-    # Bardziej estetyczny pasek postępu z ładniejszymi symbolami
+    # Estetyczny pasek postępu
     bar = '▓' * filled_length + '░' * empty_length
     
     # Formatuj czas jako MM:SS
@@ -337,8 +337,9 @@ def setup_ui_commands(cog):
         embed.add_field(name="Powtarzanie", value=f"🔄 {repeat_status}", inline=True)
         
         # Dodaj informację o prośbie o utwór
-        embed.set_footer(text=f"Na prośbę: {player.requester.display_name}", 
-                        icon_url=player.requester.display_avatar.url)
+        if hasattr(player, 'requester') and player.requester:
+            embed.set_footer(text=f"Na prośbę: {player.requester.display_name}", 
+                            icon_url=player.requester.display_avatar.url)
         
         # Dodaj czas wysłania wiadomości
         embed.timestamp = datetime.datetime.utcnow()

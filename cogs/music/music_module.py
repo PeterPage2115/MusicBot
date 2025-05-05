@@ -6,6 +6,7 @@ from .ui import setup_ui_commands
 from .utils import is_dj  # Dodaj ten import
 from utils.logger import get_logger
 import asyncio
+from config import PREFIX, DJ_ROLE_ENABLED
 
 # Inicjalizacja loggera
 logger = get_logger()
@@ -255,6 +256,62 @@ class Music(commands.Cog):
             await ctx.send(f"❌ Błąd: {str(e)}")
             import traceback
             traceback.print_exc()
+
+    @commands.command(name="commands", aliases=["h","comm"], help="Wyświetla pomoc dla komend muzycznych")
+    async def music_help(self, ctx):
+        """Wyświetla listę dostępnych komend muzycznych"""
+        embed = discord.Embed(
+            title="🎵 Pomoc MusicBot",
+            description="Lista dostępnych komend muzycznych:",
+            color=discord.Color.blue()
+        )
+        
+        # Podstawowe komendy
+        basic_commands = [
+            f"`{PREFIX}play <tytuł/URL>` - Odtwarza utwór z YouTube",
+            f"`{PREFIX}search <fraza>` - Wyszukuje i pozwala wybrać utwór",
+            f"`{PREFIX}playlist <URL>` - Dodaje całą playlistę YouTube",
+            f"`{PREFIX}skip` - Pomija bieżący utwór",
+            f"`{PREFIX}pause` - Wstrzymuje odtwarzanie",
+            f"`{PREFIX}resume` - Wznawia odtwarzanie",
+            f"`{PREFIX}stop` - Zatrzymuje odtwarzanie i czyści kolejkę"
+        ]
+        embed.add_field(name="📋 Podstawowe komendy", value="\n".join(basic_commands), inline=False)
+        
+        # Komendy kolejki
+        queue_commands = [
+            f"`{PREFIX}queue` - Wyświetla aktualną kolejkę",
+            f"`{PREFIX}nowplaying` - Pokazuje obecnie odtwarzany utwór",
+            f"`{PREFIX}remove <numer>` - Usuwa utwór z kolejki",
+            f"`{PREFIX}clear_queue` - Czyści kolejkę",
+            f"`{PREFIX}shuffle` - Miesza utwory w kolejce"
+        ]
+        embed.add_field(name="📋 Zarządzanie kolejką", value="\n".join(queue_commands), inline=False)
+        
+        # Ustawienia
+        settings_commands = [
+            f"`{PREFIX}volume <1-100>` - Ustawia głośność",
+            f"`{PREFIX}repeat` - Przełącza tryb powtarzania (wył/utwór/kolejka)"
+        ]
+        embed.add_field(name="⚙️ Ustawienia", value="\n".join(settings_commands), inline=False)
+        
+        # Inne komendy
+        other_commands = [
+            f"`{PREFIX}join` - Dołącza do kanału głosowego",
+            f"`{PREFIX}leave` - Opuszcza kanał głosowy",
+            f"`{PREFIX}ping` - Sprawdza opóźnienie bota"
+        ]
+        embed.add_field(name="🔧 Inne komendy", value="\n".join(other_commands), inline=False)
+        
+        # Informacja o uprawnieniach DJ
+        if DJ_ROLE_ENABLED:
+            dj_info = "**Uwaga**: Niektóre komendy wymagają roli DJ, gdy na kanale są inni użytkownicy."
+            embed.add_field(name="🎧 Uprawnienia DJ", value=dj_info, inline=False)
+        
+        # Stopka z informacją o autorze
+        embed.set_footer(text=f"MusicBot | Użyj {PREFIX}help dla podstawowej pomocy")
+        
+        await ctx.send(embed=embed)
 
 def setup(bot):
     bot.add_cog(Music(bot))

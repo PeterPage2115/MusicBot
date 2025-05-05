@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import random
-from utils.helpers import YTDLSource, ytdl
+from utils.helpers import YTDLSource, YTDLError
 from .utils import is_dj
 import asyncio
 import logging
@@ -462,7 +462,7 @@ def setup_queue_commands(cog):
         # Wyślij potwierdzenie
         await ctx.send(f"🔀 Pomieszano {queue_length} utworów w kolejce!")
     
-    @cog.bot.command(name="clear", aliases=["wyczysc"], help="Czyści kolejkę utworów")
+    @cog.bot.command(name="clear_queue", aliases=["wyczysc_kolejke", "clear_music"], help="Czyści kolejkę utworów")
     @is_dj()
     async def clear_command(ctx):
         """Czyści kolejkę utworów"""

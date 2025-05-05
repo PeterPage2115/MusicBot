@@ -207,127 +207,63 @@ def setup_player_commands(cog):
     # Uproszczona i poprawiona funkcja _play next
 
     async def _play_next(ctx):
-        """
-        Odtwarza następny utwór z kolejki.
-        
-        Args:
-            ctx: Kontekst komendy
-        """
+        """Odtwarza następny utwór w kolejce"""
         guild_id = ctx.guild.id
         
-        # Dodajmy informacje diagnostyczne
-        logger.debug(f"Wywołanie _play_next dla {guild_id}")
+        # Jeśli głos nie jest połączony, zakończ
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            return
         
-        try:
-            # 1. Sprawdź czy bot jest połączony z kanałem głosowym
-            if not ctx.voice_client or not ctx.voice_client.is_connected():
-                logger.warning(f"_play_next: Bot nie jest połączony z kanałem głosowym dla {guild_id}")
-                return
+        # Sprawdź tryb powtarzania
+        repeat_mode = cog.repeat_mode.get(guild_id, 0)
+        
+        # Jeśli powtarzamy bieżący utwór (repeat_mode == 1) i coś jest odtwarzane
+        if repeat_mode == 1 and guild_id in cog.now_playing and cog.now_playing[guild_id]:
+            # Odtwórz ponownie bieżący utwór
+            player = cog.now_playing[guild_id]
+            ctx.voice_client.play(player, after=lambda e: asyncio.run_coroutine_threadsafe(
+                _play_next(ctx), ctx.bot.loop).result() if e is None else print(f'Player error: {e}'))
+            ctx.voice_client._start_time = time.time()  # Zapisz czas rozpoczęcia
             
-            # 2. Upewnij się, że mamy kolejkę dla tego serwera
-            if guild_id not in cog.queues:
-                logger.debug(f"_play_next: Inicjalizacja pustej kolejki dla {guild_id}")
-                cog.queues[guild_id] = []
-            
-            # 3. Sprawdź czy kolejka jest pusta
-            if not cog.queues[guild_id]:
-                logger.debug(f"_play_next: Kolejka jest pusta dla {guild_id}")
+            # Wyślij informacje o powtarzanym utworze
+            channel = cog.command_channels.get(guild_id)
+            if channel:
+                await cog._send_now_playing_embed(ctx)  # Dodaj tę linię!
                 
-                # 3.1 Sprawdź tryb powtarzania
-                repeat_mode = cog.repeat_mode.get(guild_id, 0)
+        # Jeśli kolejka jest pusta
+        elif guild_id not in cog.queues or not cog.queues[guild_id]:
+            # Jeśli powtarzamy całą kolejkę (repeat_mode == 2) i mamy historię
+            if repeat_mode == 2 and guild_id in cog._queue_history and cog._queue_history[guild_id]:
+                cog.queues[guild_id] = cog._queue_history[guild_id].copy()
+                cog._queue_history[guild_id] = []
                 
-                if repeat_mode == 1 and guild_id in cog.now_playing and cog.now_playing[guild_id]:
-                    # Powtarzamy ten sam utwór
-                    player = cog.now_playing[guild_id]
-                    logger.info(f"_play_next: Powtarzanie utworu: {player.title}")
-                    
-                    # Ponownie dodaj utwór do kolejki
-                    cog.queues[guild_id].append(player)
-                    
-                elif repeat_mode == 2 and hasattr(cog, '_queue_history') and guild_id in cog._queue_history and cog._queue_history[guild_id]:
-                    # Powtarzamy całą kolejkę
-                    history_length = len(cog._queue_history[guild_id])
-                    logger.info(f"_play_next: Powtarzanie całej kolejki ({history_length} utworów)")
-                    
-                    # Głęboka kopia kolejki historii
-                    cog.queues[guild_id] = []
-                    for track in cog._queue_history[guild_id]:
-                        cog.queues[guild_id].append(track)
-                    
-                else:
-                    # Kolejka jest pusta i nie ma powtarzania
-                    logger.info(f"_play_next: Kolejka pusta dla {guild_id}, zakończono odtwarzanie")
-                    
-                    # Wyczyść informację o aktualnie odtwarzanym
-                    if guild_id in cog.now_playing:
-                        cog.now_playing[guild_id] = None
-                    
-                    # Wyślij komunikat o pustej kolejce
-                    await ctx.send("Kolejka jest pusta. Odtwarzanie zakończone.")
-                    return
-            
-            # 4. Sprawdź, czy voice_client już odtwarza muzykę
-            if ctx.voice_client.is_playing():
-                logger.warning(f"_play_next: VoiceClient już odtwarza dźwięk dla {guild_id}, zatrzymuję odtwarzanie")
-                ctx.voice_client.stop()
-            
-            # 5. Pobierz następny utwór z kolejki
+                # Kontynuuj odtwarzanie od początku kolejki
+                return await _play_next(ctx)
+            else:
+                # Koniec odtwarzania, rozpocznij licznik nieaktywności
+                await cog._start_inactivity_timer(ctx)
+        else:
+            # Pobierz następny utwór
             player = cog.queues[guild_id].pop(0)
-            logger.debug(f"_play_next: Pobrano utwór z kolejki: {player.title}")
             
-            # 6. Zapisz informację o aktualnie odtwarzanym utworze
+            # Zapisz utwór do historii (dla powtarzania całej kolejki)
+            if guild_id not in cog._queue_history:
+                cog._queue_history[guild_id] = []
+            cog._queue_history[guild_id].append(player)
+            
+            # Zapisz utwór jako obecnie odtwarzany
             cog.now_playing[guild_id] = player
             
-            logger.info(f"_play_next: Odtwarzanie utworu: {player.title}")
+            # Odtwórz utwór
+            ctx.voice_client.play(player, after=lambda e: asyncio.run_coroutine_threadsafe(
+                _play_next(ctx), ctx.bot.loop).result() if e is None else print(f'Player error: {e}'))
+            ctx.voice_client._start_time = time.time()  # Zapisz czas rozpoczęcia
             
-            # 7. Funkcja wywoływana po zakończeniu odtwarzania
-            def after_playing(error):
-                logger.debug(f"after_playing: Wywołano po zakończeniu odtwarzania")
-                
-                if error:
-                    logger.error(f"after_playing: Błąd odtwarzania: {error}")
-                
-                # WAŻNE: Używamy call_later, aby opóźnić wywołanie _play_next
-                # To zapobiega zbyt szybkiemu wywołaniu lub konfliktom
-                cog.bot.loop.call_later(0.5, lambda: 
-                    asyncio.run_coroutine_threadsafe(_play_next(ctx), cog.bot.loop)
-                )
-            
-            # 8. Odtwórz utwór
-            try:
-                ctx.voice_client.play(player, after=after_playing)
-                
-                # 9. Ustawiamy głośność
-                try:
-                    # Pobierz właściwą głośność dla tego serwera
-                    if guild_id in cog.volume_settings:
-                        volume = cog.volume_settings[guild_id]
-                    else:
-                        volume = getattr(cog, 'volume_value', 0.5)
-                    
-                    ctx.voice_client.source.volume = float(volume)
-                except Exception as e:
-                    logger.error(f"_play_next: Błąd podczas ustawiania głośności: {e}")
-                    ctx.voice_client.source.volume = 0.5
-                    
-                # 10. Wyślij informację o aktualnie odtwarzanym utworze
-                await cog._send_now_playing_embed(ctx)
-                    
-            except Exception as e:
-                logger.error(f"_play_next: Błąd podczas odtwarzania: {e}")
-                await ctx.send(f"❌ Wystąpił błąd podczas odtwarzania: {str(e)}")
-                
-                # Spróbuj odtworzyć następny utwór w przypadku błędu
-                if guild_id in cog.queues and cog.queues[guild_id]:
-                    await asyncio.sleep(1)  # Małe opóźnienie
-                    await _play_next(ctx)
-                
-        except Exception as e:
-            logger.error(f"_play_next: Ogólny błąd w funkcji: {e}")
-            import traceback
-            traceback.print_exc()
-            await ctx.send(f"❌ Wystąpił nieoczekiwany błąd: {str(e)}")
-    
+            # Wyślij informacje o odtwarzanym utworze
+            channel = cog.command_channels.get(guild_id)
+            if channel:
+                await cog._send_now_playing_embed(ctx)  # Dodaj tę linię!
+
     # Funkcja timera nieaktywności
     async def _start_inactivity_timer(self, ctx):
         """Rozpoczyna timer nieaktywności, po którym bot opuści kanał głosowy"""
